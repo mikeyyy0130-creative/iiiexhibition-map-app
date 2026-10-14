@@ -1,6 +1,7 @@
 // 設定ファイルと作品 CSV を読み込み、アプリで使いやすい形に整える
 
 import { csvToObjects, decodeText } from './csv.js';
+import { distance } from './geo.js';
 
 /** '2F' → 2, 'B1' → -1, '地下1階' → -1, '9階' → 9 */
 export function floorNumber(floor) {
@@ -24,18 +25,33 @@ export function floorText(n) {
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const hasLatLng = (o) => o && isNum(o.lat) && isNum(o.lng);
+const str = (v) => (v == null ? v : String(v).normalize('NFKC').trim());
 
-export async function loadModel(config) {
+/** 'example.com/x' のようにスキームのないリンクは https:// を補う */
+export function normalizeLink(url) {
+  const u = String(url ?? '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  if (/^[\w-]+(\.[\w-]+)+(\/|$)/i.test(u)) return `https://${u}`;
+  return u;
+}
+
+export async function loadModel(config, { fetchTimeout = 6000 } = {}) {
   const issues = [];
   const issue = (level, where, message) => issues.push({ level, where, message });
 
-  // ---- 建物・入口 ----
-  const buildings = (config.buildings || []).map((b) => ({
-    ...b,
-    entrances: (b.entrances || []).map((e) => ({ ...e, building: b.id, floorN: floorNumber(e.floor || '1F') })),
-    plan: { width: 100, height: 60, north: 0, cores: [], floors: {}, ...(b.plan || {}) },
-    venues: [],
-  }));
+  // ---- 建物・入口 ----(id は文字列にそろえる)
+  const buildings = (config.buildings || []).map((b) => {
+    const id = str(b.id);
+    return {
+      ...b,
+      id,
+      entrances: (b.entrances || []).map((e) => ({ ...e, id: str(e.id), building: id, floorN: floorNumber(e.floor || '1F') })),
+      plan: { width: 100, height: 60, north: 0, cores: [], ...(b.plan || {}), floors: {} },
+      rawFloors: b.plan?.floors || {},
+      venues: [],
+    };
+  });
   const buildingById = new Map();
   const entranceById = new Map();
   for (const b of buildings) {
@@ -48,13 +64,26 @@ export async function loadModel(config) {
       if (!hasLatLng(e)) issue('warn', `入口 ${e.name || e.id}`, '座標がないため地図に表示されません');
       if (Number.isNaN(e.floorN)) issue('warn', `入口 ${e.name || e.id}`, `floor「${e.floor}」を読めません(例: 1F, B1)`);
     }
+    // フロア図の階ごとの設定:'B1F' '2階' などの書き方もそろえる
+    for (const [k, v] of Object.entries(b.rawFloors)) {
+      const n = floorNumber(k);
+      if (Number.isNaN(n)) issue('warn', `${b.name} のフロア図`, `floors のキー「${k}」を読めません(例: 2F, B1)`);
+      b.plan.floors[Number.isNaN(n) ? k : floorCode(n)] = v;
+    }
   }
 
   // ---- 会場 ----
   const venues = [];
   const venueById = new Map();
   for (const raw of config.venues || []) {
-    const v = { ...raw, id: String(raw.id), floorN: floorNumber(raw.floor), steps: raw.steps || [] };
+    const v = {
+      ...raw,
+      id: str(raw.id),
+      building: str(raw.building),
+      entrance: str(raw.entrance),
+      floorN: floorNumber(raw.floor),
+      steps: raw.steps || [],
+    };
     const where = `会場 ${v.id}(${v.name || ''})`;
     if (venueById.has(v.id)) {
       issue('error', where, 'id が重複しています');
@@ -70,8 +99,10 @@ export async function loadModel(config) {
       if (v.color) issue('warn', where, `color「${v.color}」は #RRGGBB 形式にしてください`);
       v.color = '#334155';
     }
-    v.entranceObj = entranceById.get(v.entrance) || b.entrances[0] || null;
-    if (v.entrance && !entranceById.has(v.entrance)) issue('warn', where, `entrance「${v.entrance}」という入口がありません`);
+    const e = entranceById.get(v.entrance);
+    if (v.entrance && !e) issue('warn', where, `entrance「${v.entrance}」という入口がありません`);
+    if (e && e.building !== b.id) issue('error', where, `entrance「${v.entrance}」は${b.name}の入口ではありません`);
+    v.entranceObj = (e && e.building === b.id ? e : null) || b.entrances[0] || null;
     v.buildingObj = b;
     b.venues.push(v);
     venues.push(v);
@@ -85,34 +116,52 @@ export async function loadModel(config) {
   }
 
   // ---- 作品 ----
-  const { rows, source, error: worksError } = await loadWorks(config.works?.sources || ['data/works.csv']);
-  if (worksError) issue('error', '作品データ', worksError);
+  const loaded = await loadWorks(config.works?.sources || ['data/works.csv'], fetchTimeout);
+  const { rows, source } = loaded;
+  if (loaded.error) issue('error', '作品データ', loaded.error);
+  if (loaded.skipped.length && source) {
+    issue('warn', '作品データ', `${loaded.skipped.join(' / ')} を読めなかったため、${source} を表示しています`);
+  }
+  for (const w of rows.warnings || []) issue('error', `作品データ(${source})`, w);
+  const headers = rows.headers || [];
+  const hasIdCol = headers.includes('id') || headers.includes('title');
+  const hasVenueCol = headers.includes('venue');
+  if (rows.length && (!hasIdCol || !hasVenueCol)) {
+    issue('error', '作品データ', `見出しに ${!hasIdCol ? 'id / title' : 'venue(会場)'} の列が見つかりません。1行目: ${headers.join(', ')}`);
+  }
   const pattern = config.works?.imagePattern || '';
   const works = [];
   const workById = new Map();
   const worksByVenue = new Map(venues.map((v) => [v.id, []]));
   rows.forEach((r, i) => {
-    const where = `作品 ${r.id || `(${i + 2}行目)`}`;
-    if (!r.id && !r.title) return; // 空行
-    // venue 列は会場 id(A など)。大文字小文字の違いや、会場名での指定も受け付ける
-    const key = (r.venue || '').trim();
+    const line = r._line || i + 2;
+    const rid = str(r.id) || '';
+    const where = `作品 ${rid || `(${line}行目)`}`;
+    if (!rid && !r.title) return; // 空行
+    // venue 列は会場 id(A など)。全角・大文字小文字の違いや、会場名での指定も受け付ける
+    const key = str(r.venue) || '';
     const venueObj =
       venueById.get(key) ||
-      venues.find((v) => v.id.toLowerCase() === key.toLowerCase() || (v.name && v.name === key));
+      venues.find((v) => v.id.toLowerCase() === key.toLowerCase() || (v.name && str(v.name) === key));
     const w = {
-      id: r.id || `row-${i + 2}`,
+      id: rid || `row-${line}`,
       venue: venueObj ? venueObj.id : key,
       title: r.title || '(タイトル未定)',
       artist: r.artist || '',
       description: r.description || '',
-      link: r.link || '',
-      image: r.image || (pattern && r.id ? pattern.replaceAll('{id}', r.id) : ''),
+      link: normalizeLink(r.link),
+      image: r.image || (pattern && rid ? pattern.replaceAll('{id}', rid) : ''),
       imageExplicit: !!r.image,
-      row: i + 2,
+      row: line,
     };
-    if (!r.id) issue('warn', where, 'id が空です');
+    if (!rid) issue('warn', where, 'id が空です');
     if (!r.title) issue('warn', where, 'title が空です');
-    if (workById.has(w.id)) issue('warn', where, 'id が重複しています');
+    if (w.link && !/^https?:\/\//i.test(w.link)) issue('warn', where, `link「${w.link}」は https:// から書いてください`);
+    if (workById.has(w.id)) {
+      issue('error', where, `id が重複しています(${line}行目)`);
+      w.id = `${w.id}~${line}`;
+    }
+    if (!hasVenueCol) return;
     const list = worksByVenue.get(w.venue);
     if (!list) {
       issue('error', where, `venue「${w.venue}」という会場がありません(表示されません)`);
@@ -126,13 +175,13 @@ export async function loadModel(config) {
 
   // ---- 寄り道 ----
   const d = config.detour || {};
-  const categories = (d.categories || []).map((c) => ({ ...c, spots: [] }));
+  const categories = (d.categories || []).map((c) => ({ ...c, id: str(c.id), spots: [] }));
   const catById = new Map(categories.map((c) => [c.id, c]));
   const spots = [];
   const spotById = new Map();
   for (const s of d.spots || []) {
     const where = `寄り道 ${s.name || s.id}`;
-    const c = catById.get(s.category);
+    const c = catById.get(str(s.category));
     if (!c) {
       issue('warn', where, `category「${s.category}」がありません`);
       continue;
@@ -141,15 +190,31 @@ export async function loadModel(config) {
       issue('error', where, '座標がありません');
       continue;
     }
-    const spot = { ...s, categoryObj: c };
+    const spot = { ...s, id: str(s.id), url: normalizeLink(s.url), categoryObj: c };
+    if (spotById.has(spot.id)) issue('error', where, 'id が重複しています');
     c.spots.push(spot);
     spots.push(spot);
-    spotById.set(s.id, spot);
+    spotById.set(spot.id, spot);
   }
   for (const c of categories) {
     if (c.spots.length > 3) issue('warn', `寄り道 ${c.name}`, `${c.spots.length}件あります。推しを2〜3件に絞るのがおすすめです`);
   }
-  const detourFrom = buildingById.get(d.from) || buildings[0];
+  const detourFrom = buildingById.get(str(d.from)) || buildings[0];
+
+  // ---- 座標の桁ちがい・lat/lng の入れちがいを検出(最初の建物から 3km 以上) ----
+  const origin = buildings.find(hasLatLng);
+  if (origin) {
+    const far = (o, where) => {
+      if (!hasLatLng(o)) return;
+      const km = distance(origin, o) / 1000;
+      if (km > 3) issue('warn', where, `座標が${origin.name}から約${km.toFixed(1)}km離れています。桁や lat / lng の順を確認してください`);
+    };
+    for (const b of buildings) {
+      far(b, `建物 ${b.name}`);
+      for (const e of b.entrances) far(e, `入口 ${e.name}`);
+    }
+    for (const s of spots) far(s, `寄り道 ${s.name}`);
+  }
 
   return {
     config,
@@ -164,27 +229,31 @@ export async function loadModel(config) {
     workById,
     worksByVenue,
     worksSource: source,
-    worksError,
+    worksError: loaded.error,
     detour: { intro: d.intro || '', from: detourFrom, categories, spots, spotById },
     issues,
   };
 }
 
-async function loadWorks(sources) {
-  const errors = [];
+async function loadWorks(sources, timeout) {
+  const skipped = [];
   for (const src of sources) {
     try {
-      const res = await fetch(src, { cache: 'no-cache' });
+      // 外部(Googleスプレッドシートなど)が遅いときは待ちすぎずに次へ
+      const remote = /^https?:/i.test(src);
+      const signal = remote && typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(timeout) : undefined;
+      const res = await fetch(src, { cache: 'no-cache', signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = decodeText(await res.arrayBuffer());
+      if (/^\s*<(!doctype|html)/i.test(text)) throw new Error('CSV ではなくWebページが返りました(「ウェブに公開」→ CSV のURLか確認)');
       const rows = csvToObjects(text);
       if (!rows.length) throw new Error('データが0件です');
-      return { rows, source: src };
+      return { rows, source: src, skipped };
     } catch (e) {
-      errors.push(`${src}: ${e.message}`);
+      skipped.push(`${src}(${e.name === 'TimeoutError' ? '時間切れ' : e.message})`);
     }
   }
-  return { rows: [], source: null, error: `作品データを読み込めませんでした(${errors.join(' / ')})` };
+  return { rows: [], source: null, skipped, error: `作品データを読み込めませんでした: ${skipped.join(' / ')}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +292,10 @@ export function nowInTokyo(date = new Date()) {
 
 export function hoursOn(ex, ymd) {
   const h = ex.hours || {};
-  return h[ymd] || h.default || null;
+  const r = h[ymd] || h.default;
+  // '9:30' のような書き方も '09:30' にそろえる(文字列で比較するため)
+  const pad = (t) => String(t).trim().replace(/^(\d):/, '0$1:');
+  return Array.isArray(r) && r.length >= 2 ? [pad(r[0]), pad(r[1])] : null;
 }
 
 /**

@@ -9,9 +9,12 @@
     <link rel="icon" href="images/icon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- フォントは表示を止めないよう後から読み込む(読めなくても端末の標準フォントで表示) -->
     <link
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap"
+      media="print"
+      onload="this.media='all'"
     />
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="css/app.css" />
@@ -29,7 +32,7 @@
       <div id="map" role="region" aria-label="会場の地図"></div>
       <div class="map-top">
         <div class="mode" role="group" aria-label="地図に表示するもの">
-          <button type="button" data-mode-btn="exhibit" aria-pressed="true">展示会場</button>
+          <button type="button" data-mode-btn="exhibit" aria-pressed="true">展示</button>
           <button type="button" data-mode-btn="detour" aria-pressed="false">寄り道</button>
         </div>
       </div>

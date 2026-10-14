@@ -27,6 +27,9 @@
 https://<公開URL>/?check
 ```
 
+GitHub に push すると、同じ確認が自動で走ります(Actions タブ。失敗すると赤い×)。
+`data/config.js` の書き間違い(カンマや `'` の閉じ忘れ)があると地図全体が表示されなくなるので、編集後は必ずどちらかで確認してください。PC に Node.js があれば `npm run check` で行番号つきのエラーが出ます。
+
 ### 会場の座標を入れる
 
 Googleマップで場所を長押し(PCは右クリック)すると `35.71xxx, 139.76xxx` が出るので、`data/config.js` の `lat`(1つ目)と `lng`(2つ目)に入れます。
@@ -48,14 +51,17 @@ Googleマップで場所を長押し(PCは右クリック)すると `35.71xxx, 1
 | `link` | 作品ページのURL(任意) | |
 
 - 見出しは日本語(`作品ID, 会場, タイトル, 作者, 説明, 画像, リンク`)でも読めます
-- Excelで「CSV」保存(Shift_JIS)しても、「CSV UTF-8」で保存しても読めます
-- 並び順はCSVの行の順です
+- Excelで保存するときは「CSV UTF-8(コンマ区切り)」がおすすめです(普通の「CSV」= Shift_JIS でも読めます)
+- 説明文にカンマ `,` や改行を含めるときは、欄全体を `"…"` で囲みます(Excel/スプレッドシートなら自動)。囲み忘れなどは `?check` にエラーとして出ます
+- 並び順はCSVの行の順です。同じ `id` が2行あるとエラーになります
 
-**Googleスプレッドシートで管理したい場合**:ファイル → 共有 → ウェブに公開 → 「カンマ区切り形式(.csv)」で公開し、そのURLを `data/config.js` の `works.sources` の先頭に追加します。読めなかったときは `data/works.csv` が使われます。
+**Googleスプレッドシートで管理したい場合**:ファイル → 共有 → ウェブに公開 → 「カンマ区切り形式(.csv)」で公開し、そのURL(`…/pub?output=csv` で終わるもの。編集画面の `/edit` のURLではありません)を `data/config.js` の `works.sources` の先頭に追加します。読めなかったとき(6秒で時間切れ)は `data/works.csv` が使われ、`?check` に「読めなかったため…を表示しています」と出ます。
 
 ### 写真・画像
 
 - 置くだけで表示されます。まだ無いものは「準備中」の枠が出ます
+- **ファイル名は大文字・小文字まで正確に**(公開先の GitHub Pages は区別します)。作品画像を自動で表示させるには `<作品ID>.jpg`(拡張子は小文字の `.jpg`)。`.png` などにしたいときは `image` 列にパスを書きます
+- iPhone の HEIC 写真はそのままでは表示できないので JPEG に変換してください
 - 作品画像は正方形に切り抜いてカードに、詳細画面では4:3で表示します。長辺1200px・300KB程度に縮小しておくと、会場の電波が弱くても速く開けます
 - 入口写真は4:3がおすすめ(`data/config.js` の `entrances[].photo` にパスを書きます)
 
@@ -67,7 +73,8 @@ Googleマップで場所を長押し(PCは右クリック)すると `35.71xxx, 1
 - `cores`: エレベーター(`ev`)・階段(`stairs`)
 - `entrances[].plan`: 入口の位置/`entrances[].path`: 入口 → EV・階段の道順(1Fに点線)
 - `venues[].room`: 部屋の四角形/`venues[].path`: EV・階段 → 部屋の道順(会場の階に点線)
-- 実際の図面がある階は `plan.floors['2F'].image` に画像を指定すると、簡易図の代わりに表示されます(画像の縦横比を `width:height` にそろえると、部屋の枠がぴったり重なります)
+- 実際の図面がある階は `plan.floors['2F'].image` に画像を指定すると、簡易図の上に重ねて表示されます(画像の縦横比を `width:height` にそろえると、部屋の枠がぴったり重なります。縦横比が違っても画像はゆがまず、余白が出ます)
+- `width` はピクセルではなく方眼の数です。100前後のままにしてください(大きくすると文字が小さくなります)
 
 ### 寄り道
 
@@ -91,7 +98,7 @@ Googleマップで場所を長押し(PCは右クリック)すると `35.71xxx, 1
 | 開く画面 | URL |
 | --- | --- |
 | 地図(トップ) | `https://<公開URL>/` |
-| 会場Cの行き方 | `https://<公開URL>/?venue=C` |
+| 会場Cの行き方 | `https://<公開URL>/?venue=C`(開いたあと URL からは外れるので、再読み込みしても会場Cに戻されません) |
 | 作品 A-01 の詳細 | `https://<公開URL>/#work/A-01` |
 | 寄り道 | `https://<公開URL>/#detour` |
 
@@ -110,7 +117,7 @@ python3 -m http.server 8080
 ```sh
 npm run check        # データの確認(ブラウザ不要)
 npm test             # ユニットテスト
-npm install && npm run test:e2e   # スマホ画面での通しテスト(Playwright)
+npm install && npx playwright install chromium && npm run test:e2e   # スマホ画面での通しテスト
 ```
 
 ## 構成
@@ -126,12 +133,19 @@ js/floorplan.js     階表示・簡易フロア図・入口写真の枠
 js/data.js          データの読み込みとチェック
 js/csv.js           CSVの読み込み
 js/geo.js           距離・徒歩分数・Googleマップ連携・位置情報
+js/dom.js           画面部品を作る小さな道具・アイコン
+js/check.js         ?check のデータ確認パネル
 data/               ← 編集するのはここ
+images/             作品画像・入口写真・フロア図
+scripts/            確認用サーバー(serve.mjs)・データ確認(check-data.mjs)
+tests/              ユニットテスト・通しテスト
+.github/workflows/  push 時の自動データ確認
 vendor/leaflet/     Leaflet 1.9.4(同梱。CDNに依存しない)
 ```
 
 ## メモ
 
+- 端末の「正確な位置情報」がオフだと誤差が数百m以上になります。その場合はアプリ内で案内を出します
 - 屋内ではGPSの精度が10〜30m程度に落ち、階もわからないため、2号館の3会場はGPSで区別せずフロア図で案内しています
 - 地図タイルは OpenStreetMap の標準タイルを使っています([タイル利用ポリシー](https://operations.osmfoundation.org/policies/tiles/))。数日間のイベントの来場者規模なら問題ない想定です
 - 文字は BIZ UDPゴシック(読みやすさ重視のユニバーサルデザイン書体)、階や番号は Barlow を使っています(Google Fonts。読めない環境では端末の標準フォント)

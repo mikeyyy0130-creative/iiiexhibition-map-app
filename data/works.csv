@@ -1,4 +1,4 @@
-id,venue,title,artist,description,image,link
+﻿id,venue,title,artist,description,image,link
 A-01,A,ゆらぎの温度,佐藤 ひかり,"部屋の温度のわずかな変化を、光の揺らぎに変換するインスタレーション。
 近づくと、あなたの体温で光が変わります。",images/works/sample-1.svg,
 A-02,A,指先の天気,田中 蒼,"指でなぞった軌跡が、画面の中の空模様になります。晴れ、くもり、ときどき雨。",,

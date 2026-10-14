@@ -10,7 +10,9 @@ export function h(tag, attrs, ...children) {
     for (const [k, v] of Object.entries(attrs)) {
       if (v == null || v === false) continue;
       if (k === 'class') el.className = v;
-      else if (k === 'dataset') Object.assign(el.dataset, v);
+      else if (k === 'dataset') {
+        for (const [dk, dv] of Object.entries(v)) if (dv != null) el.dataset[dk] = dv;
+      }
       else if (k === 'html') el.innerHTML = v;
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (v === true) el.setAttribute(k, '');

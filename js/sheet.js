@@ -15,11 +15,10 @@ export function createSheet(root, { onChange } = {}) {
     const vh = window.innerHeight;
     const topbar = document.querySelector('.topbar')?.offsetHeight || 56;
     const full = vh - topbar - 6;
-    heights = {
-      peek: Math.round(Math.min(Math.max(vh * 0.32, 196), 270)),
-      half: Math.round(Math.min(vh * 0.56, full)),
-      full,
-    };
+    // 横向きなど縦が短い画面でも peek < half < full の順を保ち、地図が見える余白を残す
+    const peek = Math.round(Math.min(Math.max(vh * 0.32, 196), 270, full * 0.45));
+    const half = Math.round(Math.min(Math.max(vh * 0.56, peek + 60), full));
+    heights = { peek, half, full };
     root.style.height = `${full}px`;
   }
 
@@ -29,7 +28,7 @@ export function createSheet(root, { onChange } = {}) {
     root.style.transform = `translateY(${heights.full - px}px)`;
     document.documentElement.style.setProperty('--sheet-visible', `${Math.round(px)}px`);
     // 画面外に隠れている分だけ下に余白を足し、最後の項目までスクロールで届くようにする
-    body.style.paddingBottom = `${Math.max(0, heights.full - px) + 24}px`;
+    body.style.paddingBottom = `calc(${Math.max(0, heights.full - px) + 24}px + env(safe-area-inset-bottom))`;
   }
 
   function setState(next, { animate = true, silent = false } = {}) {
@@ -172,9 +171,21 @@ export function createSheet(root, { onChange } = {}) {
     /** ヘッダーと本文を差し替える */
     render(headNodes, bodyNodes, { keepScroll = false } = {}) {
       const top = body.scrollTop;
+      // キーボード・読み上げ利用時にフォーカスが <body> に飛ばないよう、同じ役割の要素へ戻す
+      const active = document.activeElement;
+      const hadFocus = root.contains(active) && active !== grip;
+      const focusKey = hadFocus ? active.closest('[data-focus-key]')?.dataset.focusKey : null;
       head.replaceChildren(...[headNodes].flat().filter(Boolean));
       body.replaceChildren(...[bodyNodes].flat().filter(Boolean));
       body.scrollTop = keepScroll ? top : 0;
+      if (hadFocus) {
+        const target =
+          (focusKey && root.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)) || head.querySelector('.sheet-title');
+        if (target) {
+          if (!target.matches('button, a, [tabindex]')) target.setAttribute('tabindex', '-1');
+          target.focus({ preventScroll: true });
+        }
+      }
     },
     body,
     head,

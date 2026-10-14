@@ -15,6 +15,8 @@ const animate = () => !window.matchMedia('(prefers-reduced-motion: reduce)').mat
  */
 export function createMap(el, model, { getPadding, onBuilding, onSpot, onEntrance }) {
   const cfg = model.map;
+  // 指が少し動いただけでピンのタップがドラッグ扱いになるのを防ぐ(既定 3px は iOS で厳しすぎる)
+  L.Draggable.mergeOptions({ clickTolerance: 10 });
   const map = L.map(el, {
     center: cfg.center || [35.7132, 139.7612],
     zoom: cfg.zoom || 17,
@@ -138,29 +140,47 @@ export function createMap(el, model, { getPadding, onBuilding, onSpot, onEntranc
   }
 
   // ---- 表示位置の制御(シートに隠れない範囲で中央に) ----
-  function visibleOffset() {
-    const { top, bottom } = getPadding();
+  /** シート等に隠れる上下左右の余白。縦が短い画面でも地図が最低 minFree px は残るよう縮める */
+  function paddings(extraTop = 0, extraBottom = 0, minFree = 120) {
+    const { top, bottom, left = 0 } = getPadding();
     const H = map.getSize().y;
-    const visibleCenterY = top + (H - top - bottom) / 2;
-    return H / 2 - visibleCenterY;
+    let t = top + extraTop;
+    let b = bottom + extraBottom;
+    // 縦が短い画面では余白を削って地図の見える範囲を確保する。
+    // ただしシートに隠れる分(bottom)は削らない(削るとピンや現在地がシートの下に入ってしまう)
+    let over = t + b - (H - minFree);
+    if (over > 0) {
+      const cutB = Math.min(over, extraBottom);
+      b -= cutB;
+      over -= cutB;
+      t -= Math.min(over, t - Math.min(top, 16));
+    }
+    return { t: Math.max(0, t), b, l: left };
   }
 
-  function panToVisible(latlng, zoom) {
+  function visibleOffset() {
+    const { t, b, l } = paddings(0, 0, 60);
+    const { x: W, y: H } = map.getSize();
+    return L.point(W / 2 - (l + (W - l) / 2), H / 2 - (t + (H - t - b) / 2));
+  }
+
+  function panToVisible(latlng, zoom, anim = animate()) {
     const z = zoom ?? map.getZoom();
-    const p = map.project(latlng, z).add([0, visibleOffset()]);
-    map.setView(map.unproject(p, z), z, { animate: animate() });
+    const p = map.project(latlng, z).add(visibleOffset());
+    map.setView(map.unproject(p, z), z, { animate: anim });
   }
 
-  function fitTo(points, maxZoom = 18) {
-    const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  function fitTo(points, { maxZoom = 18, anim = animate(), extraBottom = 24 } = {}) {
+    const valid = points.filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lng));
     if (!valid.length) return;
-    const { top, bottom } = getPadding();
+    const { t, b, l } = paddings(70, extraBottom);
     const bounds = L.latLngBounds(valid.map((p) => [p.lat, p.lng]));
+    map.stop(); // 進行中のズームアニメーションに上書きされないように
     map.fitBounds(bounds, {
-      paddingTopLeft: [40, top + 70],
-      paddingBottomRight: [40, bottom + 24],
+      paddingTopLeft: [40 + l, t],
+      paddingBottomRight: [40, b],
       maxZoom,
-      animate: animate(),
+      animate: anim,
     });
   }
 
@@ -172,22 +192,39 @@ export function createMap(el, model, { getPadding, onBuilding, onSpot, onEntranc
       if (mode === 'detour') detourLayer.addTo(map);
       else detourLayer.remove();
       el.dataset.mode = mode;
+      // 寄り道モードでは小さな寄り道ピンを建物の看板より手前に(看板の下に隠れてタップできなくなるのを防ぐ)
+      for (const m of spotMarkers.values()) m.setZIndexOffset(mode === 'detour' ? 1100 : 0);
     },
-    fitAll() {
+    fitAll({ anim = animate() } = {}) {
       const pts = [...model.buildings];
       if (mode === 'detour') {
         pts.push(...model.detour.spots);
         for (const s of model.detour.spots) for (const [lat, lng] of s.path || []) pts.push({ lat, lng });
       }
-      fitTo(pts);
+      fitTo(pts, { anim });
     },
-    focusBuilding(id, { zoom } = {}) {
+    /** 任意の地点が全部見えるように(現在地+会場など) */
+    fitTo,
+    /** 建物を表示。include(使う入口など)があれば一緒に収める */
+    focusBuilding(id, { zoom, include } = {}) {
       const b = model.buildingById.get(id);
       if (!b) return;
-      panToVisible([b.lat, b.lng], Math.max(map.getZoom(), zoom ?? 17));
+      if (include && Number.isFinite(include.lat)) {
+        fitTo([b, include], { maxZoom: Math.max(map.getZoom(), zoom ?? 17), extraBottom: 56 });
+      } else {
+        panToVisible([b.lat, b.lng], Math.max(map.getZoom(), zoom ?? 17));
+      }
     },
     focusPoint(p, zoom) {
       panToVisible([p.lat, p.lng], Math.max(map.getZoom(), zoom ?? 17));
+    },
+    /** 点が地図の見えている範囲(シートの外)にあるか */
+    isVisible(p, margin = 30) {
+      if (!p || !Number.isFinite(p.lat)) return true;
+      const { t, b, l } = paddings(0, 0, 60);
+      const pt = map.latLngToContainerPoint([p.lat, p.lng]);
+      const { x: W, y: H } = map.getSize();
+      return pt.x > l + margin && pt.x < W - margin && pt.y > t + margin && pt.y < H - b - margin;
     },
     setSelectedBuilding(id) {
       for (const [bid, m] of buildingMarkers) m.getElement()?.classList.toggle('is-selected', bid === id);
@@ -197,7 +234,7 @@ export function createMap(el, model, { getPadding, onBuilding, onSpot, onEntranc
       for (const [sid, m] of spotMarkers) {
         const on = sid === id;
         m.getElement()?.classList.toggle('is-selected', on);
-        m.setZIndexOffset(on ? 500 : 0);
+        m.setZIndexOffset(on ? 1500 : mode === 'detour' ? 1100 : 0);
       }
     },
     setUser,
@@ -206,6 +243,9 @@ export function createMap(el, model, { getPadding, onBuilding, onSpot, onEntranc
     },
     centerOnUser() {
       if (userPos) panToVisible([userPos.lat, userPos.lng], Math.max(map.getZoom(), 17));
+    },
+    stop() {
+      map.stop();
     },
     invalidate() {
       map.invalidateSize({ animate: false });

@@ -30,6 +30,7 @@ export function renderGuide(building, venue, shownFloor, handlers, checkMode) {
           h('span', { class: 'code' }, floorCode(venue.floorN)),
           ` ${building.name} ${floorText(venue.floorN)}`,
         ),
+        entrance ? h('div', { class: 'guide-door' }, icon('door'), `入口: ${entrance.name}`) : null,
       ),
     ),
     h(
@@ -102,11 +103,12 @@ function planFigure(building, venue, floor) {
   const vb = `${-pad} ${-pad} ${W + pad * 2} ${H + pad * 2}`;
   const pts = (arr) => arr.map(([x, y]) => `${x},${y}`).join(' ');
 
-  const layers = [];
+  // 外形は常に描く(図面画像が読めなくても部屋の枠が浮かないように)。画像は縦横比を保って重ねる
+  const layers = [s('polygon', { points: pts(outline), class: 'fp-outline' })];
   if (image) {
-    layers.push(s('image', { href: image, x: 0, y: 0, width: W, height: H, preserveAspectRatio: 'none' }));
-  } else {
-    layers.push(s('polygon', { points: pts(outline), class: 'fp-outline' }));
+    const img = s('image', { href: image, x: 0, y: 0, width: W, height: H, preserveAspectRatio: 'xMidYMid meet' });
+    img.addEventListener('error', () => img.remove());
+    layers.push(img);
   }
 
   // この階にある会場(案内中の会場を強調)
@@ -120,7 +122,7 @@ function planFigure(building, venue, floor) {
         { class: `fp-room${target ? ' is-target' : ''}`, style: `--c:${v.color}` },
         s('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 1.2 }),
         s('text', { x: r.x + r.w / 2, y: r.y + r.h / 2, class: 'fp-room-id' }, v.id),
-        s('text', { x: r.x + r.w / 2, y: r.y + r.h / 2 + 6.2, class: 'fp-room-name' }, v.name),
+        s('text', { x: r.x + r.w / 2, y: r.y + r.h / 2 + 7, class: 'fp-room-name' }, v.name),
       ),
     );
   }
@@ -140,8 +142,8 @@ function planFigure(building, venue, floor) {
       s(
         'g',
         { class: `fp-core fp-${c.type || 'core'}` },
-        s('rect', { x: c.x - 3.4, y: c.y - 3.4, width: 6.8, height: 6.8, rx: 1 }),
-        s('text', { x: c.x, y: c.y + 1.3 }, c.type === 'ev' ? 'EV' : c.type === 'stairs' ? '階段' : c.label || ''),
+        s('rect', { x: c.x - 5, y: c.y - 3.6, width: 10, height: 7.2, rx: 1.2 }),
+        s('text', { x: c.x, y: c.y + 1.6 }, c.type === 'ev' ? 'EV' : c.type === 'stairs' ? '階段' : c.label || ''),
       ),
     );
   }
@@ -153,7 +155,7 @@ function planFigure(building, venue, floor) {
     const { x, y } = e.plan;
     // 外形の外側へ向けてラベルを置く
     const lx = x <= 0 ? x - 1.5 : x >= W ? x + 1.5 : x;
-    const ly = y <= 0 ? y - 3.2 : y >= H ? y + 6.4 : y;
+    const ly = y <= 0 ? y - 3.6 : y >= H ? y + 7.4 : y;
     const anchor = x <= 0 ? 'end' : x >= W ? 'start' : 'middle';
     layers.push(
       s(

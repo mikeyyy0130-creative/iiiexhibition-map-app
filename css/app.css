@@ -354,8 +354,15 @@ button {
   color: #fff;
   transform: translateY(-3px);
 }
-.bpin-wrap:focus-visible {
+.bpin-wrap:focus-visible,
+.spin-wrap:focus-visible,
+.epin-wrap:focus-visible {
   outline: none;
+}
+.spin-wrap:focus-visible .spin-dot,
+.epin-wrap:focus-visible .epin-dot {
+  outline: 3px solid var(--user);
+  outline-offset: 2px;
 }
 .bpin-wrap:focus-visible .bpin-card {
   outline: 3px solid var(--user);
@@ -394,7 +401,7 @@ button {
 }
 .epin-label {
   position: absolute;
-  top: 30px;
+  bottom: 30px;
   left: 50%;
   transform: translateX(-50%);
   padding: 2px 8px;
@@ -487,6 +494,13 @@ button {
     transform: scale(2.6);
     opacity: 0;
   }
+}
+/* 誤差が大きいとき(屋内・「正確な位置情報」オフ)は点を薄く */
+#map.low-accuracy .upin {
+  background: #8fb4ec;
+}
+#map.low-accuracy .upin::after {
+  animation: none;
 }
 .accuracy {
   fill: var(--user);
@@ -826,6 +840,19 @@ button {
   color: var(--ink-2);
   font-size: 14px;
 }
+.guide-door {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+.guide-door .icon {
+  width: 18px;
+  height: 18px;
+}
 .guide-meta .code {
   font-size: 20px;
   color: var(--ink);
@@ -929,7 +956,7 @@ button {
   font: 700 7px var(--font-code);
 }
 .fp-room-name {
-  font-size: 3.6px;
+  font-size: 4.6px;
 }
 .fp-room.is-target rect {
   fill: var(--c);
@@ -953,7 +980,7 @@ button {
 }
 .fp-core text {
   fill: #fff;
-  font: 700 2.8px var(--font);
+  font: 700 4.2px var(--font);
   text-anchor: middle;
 }
 .fp-entrance circle {
@@ -968,7 +995,7 @@ button {
 }
 .fp-entrance text {
   fill: var(--ink);
-  font: 700 3.6px var(--font);
+  font: 700 4.6px var(--font);
 }
 .fp-north path {
   fill: var(--ink);
@@ -1085,8 +1112,8 @@ button {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  margin: 0 -16px 4px;
-  padding: 0 16px 8px;
+  margin: -4px -16px 0;
+  padding: 4px 16px 8px;
   scrollbar-width: none;
 }
 .chips::-webkit-scrollbar {
@@ -1483,8 +1510,11 @@ button {
   font-size: 14px;
   line-height: 1.5;
   box-shadow: var(--shadow-float);
+  max-height: calc(100% - var(--sheet-visible) - 84px - var(--topbar-h) - env(safe-area-inset-top));
+  overflow: auto;
 }
 :root[data-sheet='full'] .toast {
+  max-height: 40vh;
   bottom: auto;
   top: calc(var(--topbar-h) + env(safe-area-inset-top) + 10px);
 }

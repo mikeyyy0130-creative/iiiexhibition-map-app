@@ -74,8 +74,17 @@ await step('会場Cを選ぶと 9F の案内と、1F(入口)・2F・9F の階表
   assert.equal(await page.locator('.fp-entrance.is-used').count(), 1);
 });
 
-await step('作品タブ: 2号館の作品カードと、会場でのしぼりこみ', async () => {
+await step('作品タブ: 選んだ会場(C)の作品にしぼって開き、戻ると C のまま', async () => {
   await page.locator('[role=tab]', { hasText: '作品' }).click();
+  await page.waitForFunction(() => location.hash === '#building/eng2/works/C');
+  assert.equal(await page.locator('.card').count(), 5);
+  await page.locator('[role=tab]', { hasText: '館内の行き方' }).click();
+  assert.equal(await page.locator('.guide-name').textContent(), '92B');
+});
+
+await step('作品タブ: すべて/会場でのしぼりこみ', async () => {
+  await page.locator('[role=tab]', { hasText: '作品' }).click();
+  await page.locator('.chip', { hasText: 'すべて' }).click();
   assert.equal(await page.locator('.card').count(), 25);
   await page.locator('.chip', { hasText: 'フォーラム' }).click();
   assert.equal(await page.locator('.card').count(), 9);
@@ -106,6 +115,17 @@ await step('展示会場に戻すと寄り道ピンが消える', async () => {
   assert.equal(await page.locator('.spin').count(), 0);
 });
 
+await step('展示情報を開いて閉じても、下の画面はそのまま', async () => {
+  await page.locator('.bpin-card', { hasText: '工学部2号館' }).click();
+  await page.waitForFunction(() => location.hash.startsWith('#building/eng2'));
+  await page.locator('#info-btn').click();
+  await page.waitForSelector('#overlay:not([hidden]) .info');
+  assert.equal(await page.locator('#sheet').getAttribute('aria-label'), '工学部2号館');
+  await page.locator('#overlay-close').click();
+  await page.waitForFunction(() => location.hash.startsWith('#building/eng2'));
+  await page.locator('.sheet-head .icon-btn').click();
+});
+
 await step('展示情報の画面', async () => {
   await page.locator('#info-btn').click();
   await page.waitForSelector('#overlay:not([hidden]) .info');
@@ -124,8 +144,9 @@ await step('QR 用リンク: #venue/D と ?venue=C で会場が開く', async ()
   await p.waitForSelector('.guide-name');
   assert.equal(await p.locator('.guide-name').textContent(), '中山未来ファクトリー');
   assert.deepEqual(await p.locator('.fs-code').allTextContents(), ['1F', 'B1']);
-  await p.goto(`${BASE}?venue=C`);
+  await p.goto(`${BASE}?venue=c`);
   await p.waitForFunction(() => document.querySelector('.guide-name')?.textContent === '92B');
+  assert.equal(await p.evaluate(() => location.search), '', '?venue= は URL から外れる(再読み込みで戻されない)');
   assert.deepEqual(p.errors, []);
   await p.context().close();
 });
@@ -139,6 +160,29 @@ await step('位置情報を拒否 → 設定方法つきの案内が出る', asy
   assert.match(await p.locator('#toast').textContent(), /許可/);
   assert.deepEqual(p.errors, []);
   await p.context().close();
+});
+
+await step('横向きのスマホでも会場ピンと現在地が地図に見える', async () => {
+  const ctx = await browser.newContext({ ...devices['iPhone 13 landscape'], locale: 'ja-JP', geolocation: HONGO3, permissions: ['geolocation'] });
+  await ctx.route(/tile\.openstreetmap\.org/, (r) => r.fulfill({ contentType: 'image/svg+xml', body: TILE }));
+  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ contentType: 'text/css', body: '' }));
+  const p = await ctx.newPage();
+  await p.goto(BASE);
+  await p.waitForSelector('.upin');
+  await p.waitForTimeout(800);
+  const sheetTop = (await p.locator('#sheet').boundingBox()).y;
+  const visible = async (sel) => {
+    const b = await p.locator(sel).first().boundingBox();
+    return b && b.y > 0 && b.y < sheetTop && b.x > 0 && b.x < p.viewportSize().width;
+  };
+  assert.ok(await visible('.upin'), '現在地の点がシートの上に見える');
+  for (const card of await p.locator('.bpin-card').all()) {
+    const b = await card.boundingBox();
+    assert.ok(b.y + b.height > 0 && b.y < sheetTop, '会場ピンがシートの上に見える');
+  }
+  const h = await p.evaluate(() => [...document.querySelectorAll('.sheet')].map((e) => e.dataset.state));
+  assert.deepEqual(h, ['peek']);
+  await ctx.close();
 });
 
 await step('?check でデータ確認パネル(エラー 0)', async () => {

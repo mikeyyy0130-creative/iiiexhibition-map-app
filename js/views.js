@@ -144,11 +144,16 @@ export function buildingView(model, ctx, st) {
     h(
       'div',
       { class: 'tabs', role: 'tablist' },
-      tabButton('館内の行き方', tab === 'guide', () => ctx.go(`building/${b.id}/guide/${venue?.id || ''}`, { replace: true })),
+      tabButton('館内の行き方', tab === 'guide', () => ctx.go(`building/${b.id}/guide/${venue?.id || ''}`, { replace: true }), 'tab-guide'),
       tabButton(
         h('span', null, '作品', h('span', { class: 'tab-count' }, works.length)),
         tab === 'works',
-        () => ctx.go(`building/${b.id}/works${st.filter ? `/${st.filter}` : ''}`, { replace: true }),
+        () => {
+          // 会場を選んでいたら、その会場の作品にしぼって開く
+          const f = st.filter || (st.venueChosen && b.venues.length > 1 ? venue?.id : null);
+          ctx.go(`building/${b.id}/works${f ? `/${f}` : ''}`, { replace: true });
+        },
+        'tab-works',
       ),
     ),
   ];
@@ -179,10 +184,10 @@ export function buildingView(model, ctx, st) {
   return { head, body };
 }
 
-function tabButton(label, selected, onclick) {
+function tabButton(label, selected, onclick, focusKey) {
   return h(
     'button',
-    { type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(selected), onclick },
+    { type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(selected), onclick, dataset: { focusKey } },
     label,
   );
 }
@@ -200,6 +205,7 @@ function venuePicker(b, current, onPick) {
           'aria-checked': String(v.id === current.id),
           class: 'vp',
           style: `--c:${v.color}`,
+          dataset: { focusKey: `vp-${v.id}` },
           onclick: () => onPick(v.id),
         },
         badge(v, 'sm'),
@@ -228,9 +234,15 @@ function worksList(model, ctx, b, filter) {
       ? h(
           'div',
           { class: 'chips', role: 'group', 'aria-label': '会場でしぼりこむ' },
-          chip('すべて', !filter, () => ctx.go(`building/${b.id}/works`, { replace: true })),
+          chip('すべて', !filter, () => ctx.go(`building/${b.id}/works`, { replace: true }), null, 'chip-all'),
           b.venues.map((v) =>
-            chip([badge(v, 'xs'), ` ${v.name}`], filter === v.id, () => ctx.go(`building/${b.id}/works/${v.id}`, { replace: true }), v.color),
+            chip(
+              [badge(v, 'xs'), ` ${v.name}`],
+              filter === v.id,
+              () => ctx.go(`building/${b.id}/works/${v.id}`, { replace: true }),
+              v.color,
+              `chip-${v.id}`,
+            ),
           ),
         )
       : null;
@@ -255,10 +267,10 @@ function worksList(model, ctx, b, filter) {
   return [chips, ...groups];
 }
 
-function chip(label, pressed, onclick, color) {
+function chip(label, pressed, onclick, color, focusKey) {
   return h(
     'button',
-    { type: 'button', class: 'chip', 'aria-pressed': String(pressed), onclick, style: color ? `--c:${color}` : null },
+    { type: 'button', class: 'chip', 'aria-pressed': String(pressed), onclick, style: color ? `--c:${color}` : null, dataset: { focusKey } },
     label,
   );
 }
@@ -281,7 +293,7 @@ function workCard(w, ctx) {
 
 function thumb(w) {
   // 画像がない間は、会場色の地に作品番号を出す
-  const box = h('span', { class: 'thumb', style: `--c:${w.venueObj.color}` }, h('span', { class: 'thumb-ph code' }, w.id));
+  const box = h('span', { class: 'thumb', style: `--c:${w.venueObj.color}`, 'aria-hidden': 'true' }, h('span', { class: 'thumb-ph code' }, w.id));
   if (w.image) {
     const img = h('img', { src: w.image, alt: '', loading: 'lazy', decoding: 'async' });
     img.addEventListener('load', () => box.classList.add('has-img'));
@@ -361,7 +373,7 @@ export function detourView(model, ctx, st) {
       'button',
       { type: 'button', class: 'btn btn-back-exhibit', onclick: () => ctx.go('') },
       icon('back'),
-      '展示会場にもどる',
+      '展示の地図にもどる',
     ),
   );
   return { head, body };

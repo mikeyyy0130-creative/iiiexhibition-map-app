@@ -24,7 +24,17 @@ async function boot() {
   try {
     config = (await import(`../data/config.js?t=${Date.now()}`)).default;
   } catch (e) {
-    throw new Error(`data/config.js の書き方に誤りがあります(${e.message})。カンマや ' の閉じ忘れを確認してください。`);
+    if (e instanceof SyntaxError) {
+      throw new Error(
+        `data/config.js の書き方に誤りがあります(${e.message})。カンマや ' の閉じ忘れを確認してください。PCで npm run check を実行すると行番号がわかります。`,
+      );
+    }
+    // 通信の失敗なら、キャッシュされた版でもう一度
+    try {
+      config = (await import('../data/config.js')).default;
+    } catch {
+      throw new Error('データを読み込めませんでした。電波の良い場所で、ページを再読み込みしてください。');
+    }
   }
   const model = await loadModel(config);
   const app = createApp(model);
@@ -67,8 +77,10 @@ function createApp(model) {
   let userMoved = false; // 来場者が地図を動かしたか
   let firstFix = true;
   let wantCenter = false;
+  let warnedAccuracy = false;
 
   // ---- 部品 ----
+  const wide = window.matchMedia('(min-width: 900px)');
   const sheet = createSheet($('#sheet'), {
     onChange: (state, px, changed) => {
       document.documentElement.dataset.sheet = state;
@@ -78,7 +90,11 @@ function createApp(model) {
   document.documentElement.dataset.sheet = sheet.state;
 
   const map = createMap($('#map'), model, {
-    getPadding: () => ({ top: ($('.map-top')?.offsetHeight || 52) + 8, bottom: sheet.visibleHeight }),
+    // PC の幅ではシートが左側のパネルになるので、下ではなく左を空ける
+    getPadding: () =>
+      wide.matches
+        ? { top: ($('.map-top')?.offsetHeight || 52) + 8, bottom: 0, left: $('#sheet').offsetWidth + 16 }
+        : { top: ($('.map-top')?.offsetHeight || 52) + 8, bottom: sheet.visibleHeight },
     onBuilding: (id) => go(`building/${id}`),
     onSpot: (id) => go(`detour/${id}`, { replace: current?.view === 'detour' }),
     onEntrance: (id) => {
@@ -89,12 +105,15 @@ function createApp(model) {
   const mapEl = $('#map');
   for (const ev of ['pointerdown', 'wheel']) mapEl.addEventListener(ev, () => (userMoved = true), { passive: true });
 
+  /** 建物と、案内中の会場の入口が地図に見えるように */
+  function showBuilding(r) {
+    const v = model.venueById.get(r.venue);
+    map.focusBuilding(r.id, { zoom: 18, include: v?.entranceObj });
+  }
   function keepBuildingVisible(id) {
     const b = model.buildingById.get(id);
-    if (!b) return;
-    const p = map.map.latLngToContainerPoint([b.lat, b.lng]);
-    const limit = map.map.getSize().y - sheet.visibleHeight - 30;
-    if (p.y > limit || p.y < 60) map.focusBuilding(id);
+    const e = model.venueById.get(current?.venue)?.entranceObj;
+    if (b && (!map.isVisible(b) || !map.isVisible(e))) showBuilding(current);
   }
 
   // ---- 現在地 ----
@@ -117,13 +136,17 @@ function createApp(model) {
         wantCenter = false;
         map.centerOnUser();
         if (near && near.d > 3000) toast(`会場まで約${formatDistance(near.d)}あります。経路は「経路」ボタンからGoogleマップで確認できます。`, 6000);
-      } else if (firstFix && !userMoved && current?.view === 'home' && near && near.d < 2000) {
-        // 近くにいるなら、現在地と会場が両方見えるように
-        const pts = [...model.buildings, pos];
-        map.map.fitBounds(
-          L.latLngBounds(pts.map((p) => [p.lat, p.lng])),
-          { paddingTopLeft: [40, 120], paddingBottomRight: [40, sheet.visibleHeight + 24], maxZoom: 18 },
-        );
+      } else if (firstFix && !userMoved && current?.view === 'home' && !current.overlay && near && near.d < 2000) {
+        // 近くにいるなら、現在地と会場が両方見えるように(最初の表示アニメーションに負けないよう即時に)
+        map.fitTo([...model.buildings, pos], { anim: false });
+      }
+      // 「正確な位置情報」がオフだと誤差が数百m〜数km。距離表示が当てにならないことを知らせる
+      if (pos.accuracy > 300 && !warnedAccuracy) {
+        warnedAccuracy = true;
+        toast('現在地の誤差が大きくなっています。端末の設定で「正確な位置情報」をオンにすると改善します。', 7000, {
+          label: '設定方法',
+          onClick: () => go('info'),
+        });
       }
       firstFix = false;
     },
@@ -218,14 +241,19 @@ function createApp(model) {
     const [k, a, b, c] = raw.split('/');
     if (k === 'building' && model.buildingById.has(a)) {
       const bld = model.buildingById.get(a);
+      const has = (id) => bld.venues.some((v) => v.id === id);
       const tab = b === 'works' ? 'works' : 'guide';
-      const venue = tab === 'guide' && bld.venues.some((v) => v.id === c) ? c : bld.venues[0]?.id;
-      const filter = tab === 'works' && bld.venues.some((v) => v.id === c) ? c : null;
-      return { view: 'building', id: a, tab, venue, filter };
+      const filter = tab === 'works' && has(c) ? c : null;
+      // 会場を指定していなければ、同じ建物で直前に見ていた会場を引き継ぐ
+      const keep = current?.view === 'building' && current.id === a ? current.venue : null;
+      const venue = tab === 'guide' && has(c) ? c : filter || keep || bld.venues[0]?.id;
+      // 来場者が会場を選んだか(作品タブを開いたとき、その会場にしぼるため)
+      const chosen = (tab === 'guide' && has(c)) || !!filter || (!!keep && !!current?.venueChosen);
+      return { view: 'building', id: a, tab, venue, filter, venueChosen: chosen };
     }
-    if (k === 'venue' && model.venueById.has(a)) {
-      const v = model.venueById.get(a);
-      return { view: 'building', id: v.building, tab: 'guide', venue: v.id, filter: null };
+    if (k === 'venue') {
+      const v = findVenue(a);
+      if (v) return { view: 'building', id: v.building, tab: 'guide', venue: v.id, filter: null, venueChosen: true };
     }
     if (k === 'work' && model.workById.has(a)) {
       const w = model.workById.get(a);
@@ -241,8 +269,14 @@ function createApp(model) {
     if (k === 'detour') {
       return { view: 'detour', spot: model.detour.spotById.has(a) ? a : null };
     }
-    if (k === 'info') return { view: 'home', overlay: { type: 'info' } };
+    // 展示情報は、いま見ている画面の上に重ねる
+    if (k === 'info') return { ...(current && !current.overlay ? current : { view: 'home' }), overlay: { type: 'info' } };
     return { view: 'home' };
+  }
+
+  function findVenue(id) {
+    if (!id) return null;
+    return model.venueById.get(id) || model.venues.find((v) => v.id.toLowerCase() === String(id).toLowerCase()) || null;
   }
 
   const keyOf = (r) =>
@@ -253,8 +287,10 @@ function createApp(model) {
     const prev = current;
     // 作品詳細を開くときは、下のシートをそのまま残す(スクロール位置を保つ)
     if (r.overlay?.type === 'work' && prev?.view === 'building' && prev.id === r.id && !prev.overlay) {
-      Object.assign(r, { tab: prev.tab, filter: prev.filter, venue: prev.venue });
+      Object.assign(r, { tab: prev.tab, filter: prev.filter, venue: prev.venue, venueChosen: prev.venueChosen });
     }
+    // 別の会場・画面に移ったら、フロア図で選んでいた階はリセット
+    if (prev && (prev.view !== r.view || prev.id !== r.id || prev.venue !== r.venue)) floorView = null;
     current = r;
 
     // モード
@@ -282,16 +318,18 @@ function createApp(model) {
       map.setSelectedSpot(null);
       if (viewChanged) {
         if (sheet.state === 'peek' || !prev) sheet.setState('half');
-        map.focusBuilding(r.id, { zoom: 18 });
+        showBuilding(r);
+      } else if (prev?.venue !== r.venue && r.tab === 'guide') {
+        keepBuildingVisible(r.id);
       }
     } else {
       map.setSelectedBuilding(null);
       map.showEntrances(null);
       if (r.view === 'detour') {
         // 寄り道は地図を広く見せる(一覧は引き上げると読める)。ピンを選んだらカードが見える高さに
-        if (r.spot && sheet.state === 'peek') sheet.setState('half');
+        if (r.spot && sheet.state !== 'half') sheet.setState('half');
         else if (viewChanged && !r.spot) sheet.setState('peek');
-        if (viewChanged && !r.spot) map.fitAll();
+        if (viewChanged && !r.spot) map.fitAll({ anim: !!prev });
         map.setSelectedSpot(r.spot);
         if (r.spot && (prev?.spot !== r.spot || viewChanged)) {
           const s = model.detour.spotById.get(r.spot);
@@ -305,7 +343,7 @@ function createApp(model) {
         map.setSelectedSpot(null);
         if (viewChanged) {
           if (prev) sheet.setState('peek');
-          map.fitAll();
+          map.fitAll({ anim: !!prev }); // 最初の表示はアニメーションなし(直後の現在地の調整を邪魔しない)
         }
       }
     }
@@ -367,8 +405,15 @@ function createApp(model) {
   return {
     start() {
       // QR コード用: ?venue=C でも会場を開けるように
-      const qv = params.get('venue');
-      if (!location.hash && qv && model.venueById.has(qv)) history.replaceState(null, '', `${location.search}#venue/${qv}`);
+      // ?venue= は URL から外す(再読み込みのたびに同じ会場へ戻されないように)
+      const qv = findVenue(params.get('venue'));
+      if (params.has('venue')) {
+        const p = new URLSearchParams(location.search);
+        p.delete('venue');
+        const q = p.toString();
+        const hash = !location.hash && qv ? `#venue/${qv.id}` : location.hash;
+        history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}${hash}`);
+      }
       window.addEventListener('popstate', route);
       window.addEventListener('hashchange', route);
       route();

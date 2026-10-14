@@ -6,7 +6,7 @@ import { distance, walkMinutes, googleRouteUrl } from '../js/geo.js';
 
 test('CSV: 引用符・カンマ・改行・"" エスケープ・CRLF・BOM', () => {
   const text = '﻿id,title\r\nA-01,"ゆらぎ, の温度"\r\nA-02,"1行目\n2行目"\r\nA-03,"彼は""こんにちは""と言った"\r\n\r\n';
-  assert.deepEqual(parseCSV(text), [
+  assert.deepEqual([...parseCSV(text)], [
     ['id', 'title'],
     ['A-01', 'ゆらぎ, の温度'],
     ['A-02', '1行目\n2行目'],
@@ -15,12 +15,22 @@ test('CSV: 引用符・カンマ・改行・"" エスケープ・CRLF・BOM', ()
 });
 
 test('CSV: 最終行に改行がなくても読める / 空欄', () => {
-  assert.deepEqual(parseCSV('a,b,c\n1,,3'), [['a', 'b', 'c'], ['1', '', '3']]);
+  assert.deepEqual([...parseCSV('a,b,c\n1,,3')], [['a', 'b', 'c'], ['1', '', '3']]);
 });
 
 test('CSV: 日本語の見出しも使える', () => {
   const rows = csvToObjects('作品ID,会場,タイトル,作者,説明,画像\nB-01,B,題,名前,説明文,img.jpg');
-  assert.deepEqual(rows[0], { id: 'B-01', venue: 'B', title: '題', artist: '名前', description: '説明文', image: 'img.jpg' });
+  assert.deepEqual(rows[0], { _line: 2, id: 'B-01', venue: 'B', title: '題', artist: '名前', description: '説明文', image: 'img.jpg' });
+});
+
+test('CSV: 文中の " はそのまま文字。閉じていない " や列の過不足は警告', () => {
+  const ok = csvToObjects('id,title\nA-01,7" のモニター\nA-02,次の作品');
+  assert.deepEqual(ok.map((r) => r.title), ['7" のモニター', '次の作品']);
+  assert.deepEqual(ok.warnings, []);
+  const open = csvToObjects('id,title\nA-01,"閉じ忘れ\nA-02,消える');
+  assert.match(open.warnings.join(), /2行目の " が閉じていません/);
+  const extra = csvToObjects('id,venue,title\nA-01,A,こんにちは,世界');
+  assert.match(extra.warnings.join(), /2行目: 見出しより列が多く/);
 });
 
 test('文字コード: UTF-8 と Shift_JIS(Excel 保存)を自動判別', () => {
@@ -55,6 +65,11 @@ test('会期の状態(日本時間で判定)', () => {
   assert.equal(at('2026-11-17T12:00:00+09:00').state, 'ended');
   // UTC では前日でも、日本時間で会期初日なら開催中
   assert.equal(at('2026-11-12T01:30:00Z').state, 'open');
+});
+
+test('開場時間は 9:30 のような書き方でも判定できる', () => {
+  const ex = { period: { start: '2026-11-12', end: '2026-11-16' }, hours: { default: ['9:30', '19:00'] } };
+  assert.equal(exhibitionStatus(ex, new Date('2026-11-13T12:00:00+09:00')).state, 'open');
 });
 
 test('距離と徒歩分数', () => {
@@ -105,3 +120,40 @@ test('同梱の data/config.js と data/works.csv にエラーがない', async 
     assert.equal(model.venues.length, 4);
   });
 });
+
+test('データ読み込み: 重複ID・数値ID・他の建物の入口・遠すぎる座標・階キー・リンク', () =>
+  withFetch({ 'w.csv': 'id,venue,title,link\nA-01,A,一つ目,example.com/a\nA-01,Ａ,二つ目,' }, async () => {
+    const model = await loadModel({
+      buildings: [
+        { id: 1, name: '建物1', lat: 35.71, lng: 139.76, entrances: [{ id: 'e1', name: '入口1', lat: 35.71, lng: 139.76 }], plan: { floors: { '2階': { image: 'x.png' } } } },
+        { id: 'b2', name: '建物2', lat: 139.76, lng: 35.71, entrances: [{ id: 'e2', name: '入口2', lat: 35.71, lng: 139.76 }] },
+      ],
+      venues: [{ id: 'A', name: 'a', building: 1, floor: '2F', entrance: 'e2' }],
+      works: { sources: ['w.csv'] },
+    });
+    const msgs = model.issues.map((i) => `${i.level}:${i.where}:${i.message}`).join('\n');
+    assert.ok(model.buildingById.has('1'), '数値の id も文字列として扱う');
+    assert.match(msgs, /error:会場 A.*e2」は建物1の入口ではありません/);
+    assert.equal(model.venueById.get('A').entranceObj.id, 'e1');
+    assert.match(msgs, /error:作品 A-01.*重複/);
+    assert.equal(model.works.length, 2);
+    assert.equal(new Set(model.works.map((w) => w.id)).size, 2, '重複してもカードと詳細が食い違わない');
+    assert.equal(model.works[1].venue, 'A', '全角の Ａ も A として扱う');
+    assert.equal(model.works[0].link, 'https://example.com/a');
+    assert.match(msgs, /warn:建物 建物2.*km離れています/);
+    assert.ok(model.buildingById.get('1').plan.floors['2F'], "'2階' は '2F' にそろえる");
+  }));
+
+test('データ読み込み: 見出しが違う CSV や、読めない読み込み先を知らせる', () =>
+  withFetch({ 'bad.csv': 'No,作品の名前\n1,x', 'html.csv': '<!DOCTYPE html><html></html>', 'ok.csv': 'id,venue,title\nA-01,A,t' }, async () => {
+    const cfg = (sources) => ({
+      buildings: [{ id: 'b', name: 'b', lat: 35, lng: 139 }],
+      venues: [{ id: 'A', name: 'a', building: 'b', floor: '1F' }],
+      works: { sources },
+    });
+    let model = await loadModel(cfg(['bad.csv']));
+    assert.match(model.issues.map((i) => i.message).join(), /venue\(会場\) の列が見つかりません/);
+    model = await loadModel(cfg(['html.csv', 'ok.csv']));
+    assert.equal(model.worksSource, 'ok.csv');
+    assert.match(model.issues.map((i) => i.message).join(), /html\.csv.*Webページ.*ok\.csv を表示/);
+  }));

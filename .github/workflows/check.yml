@@ -1,0 +1,16 @@
+# push のたびに、データ(data/config.js・data/works.csv・画像のパス)とテストを確認します。
+# 失敗すると GitHub の Actions タブに赤い × が付き、どこが悪いか表示されます。
+name: データ確認
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: データの確認
+        run: node scripts/check-data.mjs
+      - name: ユニットテスト
+        run: node --test tests/unit.test.mjs
